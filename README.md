@@ -131,7 +131,116 @@ distributor-gis-platform/
 # 1. Clone the repo
 git clone https://github.com/<your-username>/distributor-gis-platform.git
 cd distributor-gis-platform
+```
 
+---
+
+## Project Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         DATA LAYER                                      │
+│                                                                         │
+│   data/raw/                          data/processed/                   │
+│   ├── locations.csv  (~5,853)        ├── locations_clean.csv           │
+│   ├── sales.csv      (~16,800)       ├── sales_clean.csv               │
+│   └── vehicle_parc.csv (~135,000)    └── vehicle_parc_enriched.csv     │
+│                                                                         │
+│   Produced by: data-generation/ Python scripts (Faker + GeoPandas)     │
+└──────────────────────────────┬──────────────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                       SPATIAL DATABASE                                  │
+│                                                                         │
+│   PostgreSQL 15 + PostGIS                                               │
+│                                                                         │
+│   Tables              Spatial Type     Key Operations                   │
+│   ──────────────────  ───────────────  ───────────────────────────────  │
+│   locations           POINT            ST_DWithin, ST_Within            │
+│   territories         POLYGON          ST_Intersects (conflict check)   │
+│   vehicle_parc_grid   POINT/POLYGON    ST_Contains, spatial index scan  │
+│   sales_records       —                JOIN on dealer_id                │
+│   ml_predictions      POINT            heatmap queries                  │
+│   users               —                RBAC role column                 │
+│   ro_requests         POINT            ST_Within (territory validation) │
+└──────────────────────────────┬──────────────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                      ML & ANALYTICS ENGINE                              │
+│                   ml-engine/  (Python, runs offline)                   │
+│                                                                         │
+│   Model                  Algorithm   Input               Output         │
+│   ──────────────────────  ─────────  ──────────────────  ─────────────  │
+│   Market Potential        XGBoost    vehicle parc grid   revenue/cell   │
+│   White-Space Detection   DBSCAN     workshop locations  gap clusters   │
+│                                                                         │
+│   Saved artifacts → ml-engine/models/  (loaded by backend at startup)  │
+└──────────────────────────────┬──────────────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         BACKEND API                                     │
+│              backend/  (FastAPI + SQLAlchemy + asyncpg)                │
+│                                                                         │
+│   Module               Responsibility                                   │
+│   ─────────────────    ─────────────────────────────────────────────   │
+│   /auth                Login, JWT issue, token refresh                  │
+│   /locations           CRUD for all touchpoint entity types             │
+│   /territories         Draw, lock, conflict-check polygon boundaries    │
+│   /analytics           Serve heatmap tiles + white-space pockets        │
+│   /workflow            Submit, approve, reject RO expansion requests    │
+│                                                                         │
+│   Cross-cutting: JWT middleware → RBAC guard (org_admin / distributor)  │
+└──────────────────────────────┬──────────────────────────────────────────┘
+                               │  REST (JSON over HTTP)
+                               ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                       FRONTEND APPLICATION                              │
+│              frontend/  (React + Vite + Mapbox GL JS)                  │
+│                                                                         │
+│   Page / Component          Role                                        │
+│   ─────────────────────     ────────────────────────────────────────   │
+│   MapView                   Renders 5,800+ pins; filter by entity type  │
+│   TerritoryDrawer           Polygon draw tool; triggers conflict check  │
+│   HeatmapLayer              Revenue potential overlay from ML model     │
+│   WhiteSpacePanel           Lists gap clusters ranked by opportunity    │
+│   WorkflowQueue             Admin approval inbox for RO requests        │
+│   Dashboard                 KPI tiles scoped by user role               │
+│   Login                     JWT auth; redirects by role on success      │
+│                                                                         │
+│   State: React Context  |  Routing: react-router-dom  |  HTTP: axios   │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Data Flow Summary
+
+| Stage | What Happens | Where |
+|---|---|---|
+| **Generate** | Python scripts produce synthetic CSVs mimicking real P&A distribution data | `data-generation/` |
+| **Validate** | 3-layer coordinate check: bounding box → city radius → state polygon | `data-generation/clean_data.py` |
+| **Load** | Validated CSVs ingested into PostgreSQL with spatial indexes built | `database/load_data.py` |
+| **Train** | XGBoost trained on vehicle parc + sales; DBSCAN clusters workshop gaps | `ml-engine/` |
+| **Serve** | FastAPI reads from DB + loaded models; enforces RBAC per request | `backend/` |
+| **Render** | React fetches from API; Mapbox renders pins, polygons, heatmap | `frontend/` |
+
+### Component Dependency Map
+
+```
+frontend  ──────────────────────▶  backend (FastAPI)
+                                        │
+                          ┌─────────────┴────────────┐
+                          ▼                          ▼
+                   PostgreSQL + PostGIS       ml-engine/models/
+                          ▲
+                   data-generation/
+                   (runs once offline)
+```
+
+---
+
+```bash
 # 2. Set up Python environment and generate data
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
