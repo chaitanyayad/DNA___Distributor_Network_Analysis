@@ -196,6 +196,5 @@ This project was built as part of an internship with the Parts & Accessories dep
 
 ---
 
-## License
 
-MIT
+
