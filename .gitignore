@@ -1,0 +1,53 @@
+# Python virtual environment
+dna/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Environment secrets
+.env
+!.env.example
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Frontend build output
+frontend/dist/
+frontend/build/
+
+# ML model artifacts
+ml-engine/models/*.pkl
+ml-engine/models/*.joblib
+ml-engine/models/*.json
+
+# Data files (large generated CSVs and shapefiles)
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# pgAdmin / DB secrets
+*.pgpass
