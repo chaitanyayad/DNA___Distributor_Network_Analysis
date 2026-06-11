@@ -68,6 +68,27 @@ async def get_locations(
     Viewport-based fetching: pass 'bounds' to only return pins visible
     in the current map viewport — prevents loading all 5,800+ points at once.
     """
+    # Distributor with no locked territory: short-circuit before any spatial query.
+    # ST_Within(point, NULL) evaluates to NULL in PostgreSQL which silently returns
+    # zero rows — surface this as a clear 400 instead.
+    if current_user.role == "distributor_user" and current_user.distributor_id:
+        has_territory = await db.fetchval(
+            """
+            SELECT 1 FROM distributor_territories
+            WHERE distributor_id = $1 AND locked = TRUE
+            LIMIT 1
+            """,
+            current_user.distributor_id,
+        )
+        if not has_territory:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Your account has no locked territory assigned. "
+                    "An admin must lock your territory before location data is available."
+                ),
+            )
+
     # Validate type filter
     if type and type not in VALID_TYPES:
         raise HTTPException(
@@ -202,8 +223,8 @@ async def get_location(
             location_id,
             current_user.distributor_id,
         )
-        # If the territory boundary doesn't exist yet, in_territory will be None
-        if in_territory is False:
+        # None means no locked territory exists — treat same as outside territory
+        if not in_territory:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="This location is outside your assigned territory.",
