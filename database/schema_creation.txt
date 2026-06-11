@@ -1,148 +1,121 @@
--- ============================================================
--- TABLE 1: users
--- No dependencies — create first
--- ============================================================
-CREATE TABLE IF NOT EXISTS users (
-    id               VARCHAR(10)  PRIMARY KEY,
-    username         VARCHAR(50)  UNIQUE NOT NULL,
-    email            VARCHAR(100) UNIQUE NOT NULL,
-    hashed_password  VARCHAR(255) NOT NULL,
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- DROP existing tables in reverse dependency order (safe re-run)
+-- ─────────────────────────────────────────────────────────────────────────────
+DROP TABLE IF EXISTS ro_requests             CASCADE;
+DROP TABLE IF EXISTS distributor_territories CASCADE;
+DROP TABLE IF EXISTS market_potential_grid   CASCADE;
+DROP TABLE IF EXISTS locations               CASCADE;
+DROP TABLE IF EXISTS users                   CASCADE;
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 1. USERS
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE users (
+    id               VARCHAR(20)  PRIMARY KEY,
+    username         VARCHAR(100) NOT NULL UNIQUE,
+    email            VARCHAR(200) NOT NULL UNIQUE,
+    hashed_password  TEXT         NOT NULL,          -- bcrypt hash, never plain text
     role             VARCHAR(20)  NOT NULL CHECK (role IN ('org_admin', 'distributor_user')),
-    distributor_id   VARCHAR(10)  NULL,
+    distributor_id   VARCHAR(20)  NULL,              -- NULL for org_admin accounts
     created_at       TIMESTAMP    DEFAULT NOW()
 );
 
--- ============================================================
--- TABLE 2: locations
--- All 5,860 physical touchpoints
--- ============================================================
-CREATE TABLE IF NOT EXISTS locations (
-    id               VARCHAR(15)  PRIMARY KEY,
-    name             VARCHAR(255) NOT NULL,
-    type             VARCHAR(50)  NOT NULL,
-    city             VARCHAR(100) NOT NULL,
-    state            VARCHAR(100) NOT NULL,
-    address          TEXT,
-    pin_code         VARCHAR(10),
-    contact_person   VARCHAR(100),
-    phone            VARCHAR(20),
-    active           BOOLEAN      DEFAULT TRUE,
-    geom             GEOMETRY(Point, 4326) NOT NULL,
-    created_at       TIMESTAMP    DEFAULT NOW()
+CREATE INDEX idx_users_role ON users(role);
+CREATE INDEX idx_users_distributor_id ON users(distributor_id);
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 2. LOCATIONS
+-- All physical touchpoints: warehouses, dealers, workshops, MASS, ROs
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE locations (
+    id              VARCHAR(20)   PRIMARY KEY,
+    name            VARCHAR(300)  NOT NULL,
+    type            VARCHAR(50)   NOT NULL,   -- 'Mother Warehouse', 'Dealer', etc.
+    city            VARCHAR(100),
+    state           VARCHAR(100),
+    address         TEXT,
+    pin_code        VARCHAR(10),
+    contact_person  VARCHAR(200),
+    phone           VARCHAR(30),
+    active          BOOLEAN       DEFAULT TRUE,
+    geom            GEOMETRY(Point, 4326) NOT NULL,   -- WGS84; lon first in ST_MakePoint
+    created_at      TIMESTAMP     DEFAULT NOW()
 );
 
--- Spatial index — makes map viewport queries fast
-CREATE INDEX IF NOT EXISTS idx_locations_geom
-    ON locations USING GIST (geom);
+-- Spatial index — critical for viewport-based map queries
+CREATE INDEX idx_locations_geom ON locations USING GIST(geom);
+-- Regular indexes for common filter queries
+CREATE INDEX idx_locations_type   ON locations(type);
+CREATE INDEX idx_locations_city   ON locations(city);
+CREATE INDEX idx_locations_active ON locations(active);
 
--- Type index — filtered queries like "show only dealers"
-CREATE INDEX IF NOT EXISTS idx_locations_type
-    ON locations (type);
-
--- City index — filter by city
-CREATE INDEX IF NOT EXISTS idx_locations_city
-    ON locations (city);
-
--- ============================================================
--- TABLE 3: market_potential_grid
--- 414,736 vehicle parc grid cells
--- Loaded after ML output in Step 5,
--- but we create the table now so schema is complete
--- ============================================================
-CREATE TABLE IF NOT EXISTS market_potential_grid (
-    grid_id                  VARCHAR(15)  PRIMARY KEY,
-    center_lat               NUMERIC(10, 6) NOT NULL,
-    center_lon               NUMERIC(10, 6) NOT NULL,
-    vehicle_count            INTEGER      NOT NULL,
-    avg_vehicle_age          NUMERIC(4,1) NOT NULL,
-    commercial_pct           NUMERIC(5,1) NOT NULL,
-    weighted_vehicle_score   NUMERIC(8,2) NOT NULL,
-    predicted_revenue_inr    NUMERIC(14,2) NULL,   -- filled after ML Step 5
-    hotspot_score            NUMERIC(4,3)  NULL,   -- 0.000 to 1.000, filled after ML
-    is_white_space           BOOLEAN       DEFAULT FALSE,
-    geom                     GEOMETRY(Point, 4326) NOT NULL,
-    created_at               TIMESTAMP    DEFAULT NOW()
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 3. MARKET POTENTIAL GRID
+-- One row per 5×5 km grid cell; ML output columns start NULL
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE market_potential_grid (
+    grid_id               VARCHAR(20)    PRIMARY KEY,
+    vehicle_count         INTEGER        NOT NULL,
+    avg_vehicle_age       NUMERIC(4,1),
+    commercial_pct        NUMERIC(5,3),
+    weighted_score        NUMERIC(10,4),
+    -- ML output — NULL until train_market_potential.py populates them
+    predicted_revenue_inr NUMERIC(15,2)  NULL,
+    hotspot_score         NUMERIC(5,4)   NULL,        -- 0.0–1.0
+    -- is_white_space defaults FALSE; detect_whitespaces.py sets TRUE
+    is_white_space        BOOLEAN        DEFAULT FALSE,
+    geom                  GEOMETRY(Point, 4326) NOT NULL
 );
 
--- Spatial index
-CREATE INDEX IF NOT EXISTS idx_grid_geom
-    ON market_potential_grid USING GIST (geom);
+CREATE INDEX idx_grid_geom         ON market_potential_grid USING GIST(geom);
+CREATE INDEX idx_grid_hotspot      ON market_potential_grid(hotspot_score);
+CREATE INDEX idx_grid_white_space  ON market_potential_grid(is_white_space);
 
--- Hotspot score index — frontend filters by minimum score
-CREATE INDEX IF NOT EXISTS idx_grid_hotspot
-    ON market_potential_grid (hotspot_score);
-
--- White space index — quick fetch of flagged cells
-CREATE INDEX IF NOT EXISTS idx_grid_whitespace
-    ON market_potential_grid (is_white_space);
-
--- ============================================================
--- TABLE 4: distributor_territories
--- Polygon boundaries drawn by admins
--- ============================================================
-CREATE TABLE IF NOT EXISTS distributor_territories (
-    id               SERIAL       PRIMARY KEY,
-    territory_name   VARCHAR(100) NOT NULL,
-    distributor_id   VARCHAR(10)  NOT NULL,
-    locked           BOOLEAN      DEFAULT FALSE,
-    boundary         GEOMETRY(Polygon, 4326) NOT NULL,
-    created_at       TIMESTAMP    DEFAULT NOW(),
-    updated_at       TIMESTAMP    DEFAULT NOW()
-);
-
--- Spatial index — overlap checks use this
-CREATE INDEX IF NOT EXISTS idx_territories_geom
-    ON distributor_territories USING GIST (boundary);
-
--- Distributor ID index — fetch one distributor's territories fast
-CREATE INDEX IF NOT EXISTS idx_territories_distributor
-    ON distributor_territories (distributor_id);
-
--- Locked index — admins frequently filter for locked territories
-CREATE INDEX IF NOT EXISTS idx_territories_locked
-    ON distributor_territories (locked);
-
--- ============================================================
--- TABLE 5: ro_requests
--- Retail Office expansion requests from distributors
--- ============================================================
-CREATE TABLE IF NOT EXISTS ro_requests (
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 4. DISTRIBUTOR TERRITORIES
+-- Polygon boundaries drawn by admins in the frontend
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE distributor_territories (
     id               SERIAL        PRIMARY KEY,
-    requested_by     VARCHAR(10)   NOT NULL REFERENCES users(id),
-    distributor_id   VARCHAR(10)   NOT NULL,
-    proposed_name    VARCHAR(255)  NOT NULL,
+    territory_name   VARCHAR(200)  NOT NULL,
+    distributor_id   VARCHAR(20)   NOT NULL,   -- links to users.distributor_id
+    locked           BOOLEAN       DEFAULT FALSE,
+    boundary         GEOMETRY(Polygon, 4326) NOT NULL,  -- GeoJSON → ST_GeomFromGeoJSON()
+    created_at       TIMESTAMP     DEFAULT NOW(),
+    updated_at       TIMESTAMP     DEFAULT NOW()
+);
+
+CREATE INDEX idx_territories_geom           ON distributor_territories USING GIST(boundary);
+CREATE INDEX idx_territories_distributor_id ON distributor_territories(distributor_id);
+CREATE INDEX idx_territories_locked         ON distributor_territories(locked);
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 5. RO REQUESTS
+-- Retail Office expansion requests submitted by distributor users
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE ro_requests (
+    id               SERIAL        PRIMARY KEY,
+    requested_by     VARCHAR(20)   NOT NULL,   -- users.id
+    distributor_id   VARCHAR(20)   NOT NULL,
+    proposed_name    VARCHAR(300)  NOT NULL,
     proposed_address TEXT,
     justification    TEXT,
-    status           VARCHAR(10)   NOT NULL DEFAULT 'PENDING'
-                         CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED')),
-    conflict_flag    BOOLEAN       DEFAULT FALSE,
+    status           VARCHAR(20)   DEFAULT 'PENDING'
+                                   CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED')),
+    conflict_flag    BOOLEAN       DEFAULT FALSE,   -- TRUE if within 5 km of existing touchpoint
     admin_note       TEXT          NULL,
     geom             GEOMETRY(Point, 4326) NOT NULL,
     created_at       TIMESTAMP     DEFAULT NOW(),
     updated_at       TIMESTAMP     DEFAULT NOW()
 );
 
--- Status index — admins query PENDING requests constantly
-CREATE INDEX IF NOT EXISTS idx_ro_requests_status
-    ON ro_requests (status);
+CREATE INDEX idx_ro_requests_geom           ON ro_requests USING GIST(geom);
+CREATE INDEX idx_ro_requests_status         ON ro_requests(status);
+CREATE INDEX idx_ro_requests_distributor_id ON ro_requests(distributor_id);
 
--- Distributor index — distributors check their own requests
-CREATE INDEX IF NOT EXISTS idx_ro_requests_distributor
-    ON ro_requests (distributor_id);
-
--- Spatial index — conflict checks (is proposed point near existing touchpoint?)
-CREATE INDEX IF NOT EXISTS idx_ro_requests_geom
-    ON ro_requests USING GIST (geom);
-
--- ============================================================
--- Verify all tables created successfully
--- ============================================================
-SELECT
-    table_name,
-    (SELECT COUNT(*) FROM information_schema.columns
-     WHERE table_name = t.table_name
-     AND table_schema = 'public') AS column_count
-FROM information_schema.tables t
+-- Confirm all tables created
+SELECT table_name FROM information_schema.tables
 WHERE table_schema = 'public'
-  AND table_type = 'BASE TABLE'
 ORDER BY table_name;
