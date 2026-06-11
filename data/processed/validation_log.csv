@@ -1,5 +1,12 @@
-layer,checked,failed,corrected,dropped,note
-Layer 1 — bounding box,5853,0,0,0,Outside lat 6–37.6 / lon 68–97.5
-Layer 2 — city radius,5853,0,0,0,Distance from city center exceeds allowed radius
-Layer 3 — state boundary,5853,395,63,332,Point-in-polygon against India state boundaries
-Layer 4 — missing values / duplicates,5521,0,0,0,"Missing critical fields, duplicate IDs, near-duplicate coords"
+step,count
+input_total,5860
+layer1_dropped,0
+layer2_failed,0
+layer2_corrected,0
+layer2_dropped,0
+layer3_state_mismatch,102
+layer3_offshore,686
+layer3_corrected,102
+layer4_missing_dropped,0
+layer4_duplicates_dropped,0
+final_clean,5174
