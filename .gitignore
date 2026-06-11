@@ -13,10 +13,11 @@ dist/
 build/
 .eggs/
 snippet.py
-
+chat_summary.md
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb_checkpoints
+backend_summary.md
 
 # Environment secrets
 .env
