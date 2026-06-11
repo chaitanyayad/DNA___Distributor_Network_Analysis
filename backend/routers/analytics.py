@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from typing import Optional
 import asyncpg
 
@@ -36,7 +36,13 @@ async def get_hotspots(
     param_idx = 2
 
     if bounds:
-        min_lon, min_lat, max_lon, max_lat = [float(x) for x in bounds.split(",")]
+        try:
+            min_lon, min_lat, max_lon, max_lat = [float(x) for x in bounds.split(",")]
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="bounds must be in format 'minLon,minLat,maxLon,maxLat'",
+            )
         conditions.append(
             f"geom && ST_MakeEnvelope(${param_idx}, ${param_idx+1}, "
             f"${param_idx+2}, ${param_idx+3}, 4326)"
