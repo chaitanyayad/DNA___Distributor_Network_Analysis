@@ -1,272 +1,303 @@
+
+
 import pandas as pd
 import numpy as np
 import geopandas as gpd
 from shapely.geometry import Point
-import random
-import os
 from pathlib import Path
 
-random.seed(42)
-np.random.seed(42)
+BASE_DIR       = Path(__file__).parent.parent
+RAW_DIR        = BASE_DIR / "data" / "raw"
+PROCESSED_DIR  = BASE_DIR / "data" / "processed"
+PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 
-ROOT = Path(__file__).parent.parent
-os.makedirs(ROOT / "data/processed", exist_ok=True)
+# India bounding box
+INDIA_LAT_MIN, INDIA_LAT_MAX = 6.0,  37.6
+INDIA_LON_MIN, INDIA_LON_MAX = 68.0, 97.5
 
-# ── Load data ────────────────────────────────────────────────────────────────
-df       = pd.read_csv(ROOT / "data/raw/locations.csv")
-city_ref = pd.read_csv(ROOT / "data/raw/city_reference.csv")
-india    = gpd.read_file(ROOT / "data/raw/india_states.geojson")
 
-india_union = india.union_all() if hasattr(india, 'union_all') else india.unary_union
+# ─────────────────────────────────────────────────────────────────────────────
+# LOAD INPUT FILES
+# ─────────────────────────────────────────────────────────────────────────────
+print("Loading locations.csv ...")
+df = pd.read_csv(RAW_DIR / "locations.csv")
+print(f"  {len(df):,} rows loaded")
 
-india["state_upper"] = india["NAME_1"].str.strip().str.title()
-state_geoms          = india.set_index("state_upper")["geometry"].to_dict()
-
-city_lookup = city_ref.set_index("city").to_dict("index")
-
-# ── Tracking columns ─────────────────────────────────────────────────────────
-df["coord_validation_status"] = "PASS"
-df["validation_note"]         = ""
-
-total_input = len(df)
-log_rows    = []
-
-# ── LAYER 1: National bounding box ───────────────────────────────────────────
-print("Running Layer 1 — national bounding box check...")
-
-l1_mask = (
-    (df["latitude"]  < 6.0)  | (df["latitude"]  > 37.6) |
-    (df["longitude"] < 68.0) | (df["longitude"] > 97.5)
-)
-l1_fail = df[l1_mask].index.tolist()
-df.loc[l1_mask, "coord_validation_status"] = "DROPPED"
-df.loc[l1_mask, "validation_note"]         = "Layer1: outside India bounding box"
-
-print(f"  Layer 1 failures : {len(l1_fail)}")
-log_rows.append({
-    "layer":     "Layer 1 — bounding box",
-    "checked":   total_input,
-    "failed":    len(l1_fail),
-    "corrected": 0,
-    "dropped":   len(l1_fail),
-    "note":      "Outside lat 6–37.6 / lon 68–97.5"
-})
-
-working = df[df["coord_validation_status"] == "PASS"].copy()
-
-# ── LAYER 2: City radius check ───────────────────────────────────────────────
-print("Running Layer 2 — city radius check...")
-
-def dist_km(lat1, lon1, lat2, lon2):
-    return np.sqrt(
-        ((lat1 - lat2) * 111) ** 2 +
-        ((lon1 - lon2) * 111 * np.cos(np.radians(lat1))) ** 2
-    )
-
-def jittered_coords(city_name, jitter_km=4):
-    c        = city_lookup[city_name]
-    lat_c    = c["center_lat"]
-    lon_c    = c["center_lon"]
-    jitter_lat = random.uniform(-jitter_km, jitter_km) / 111.0
-    jitter_lon = random.uniform(-jitter_km, jitter_km) / (
-        111.0 * np.cos(np.radians(lat_c))
-    )
-    return round(lat_c + jitter_lat, 6), round(lon_c + jitter_lon, 6)
-
-l2_fail = l2_corrected = l2_dropped = 0
-
-for idx, row in working.iterrows():
-    city = row["city"]
-    if city not in city_lookup:
-        df.loc[idx, "coord_validation_status"] = "DROPPED"
-        df.loc[idx, "validation_note"]         = "Layer2: UNKNOWN_CITY"
-        l2_fail    += 1
-        l2_dropped += 1
-        continue
-
-    c       = city_lookup[city]
-    dist    = dist_km(row["latitude"], row["longitude"],
-                      c["center_lat"], c["center_lon"])
-    allowed = c["allowed_radius_km"]
-
-    if dist > allowed:
-        l2_fail += 1
-        corrected = False
-        for attempt in range(3):
-            new_lat, new_lon = jittered_coords(city, jitter_km=4 - attempt)
-            new_dist = dist_km(new_lat, new_lon, c["center_lat"], c["center_lon"])
-            if new_dist <= allowed:
-                df.loc[idx, "latitude"]                = new_lat
-                df.loc[idx, "longitude"]               = new_lon
-                df.loc[idx, "coord_validation_status"] = "CORRECTED"
-                df.loc[idx, "validation_note"]         = (
-                    f"Layer2: corrected attempt {attempt+1}, "
-                    f"new dist {new_dist:.1f}km"
-                )
-                l2_corrected += 1
-                corrected = True
-                break
-        if not corrected:
-            df.loc[idx, "coord_validation_status"] = "DROPPED"
-            df.loc[idx, "validation_note"]         = (
-                f"Layer2: failed after 3 retries, dist {dist:.1f}km"
-            )
-            l2_dropped += 1
-
-print(f"  Layer 2 failures : {l2_fail}")
-print(f"  Auto-corrected   : {l2_corrected}")
-print(f"  Dropped          : {l2_dropped}")
-log_rows.append({
-    "layer":     "Layer 2 — city radius",
-    "checked":   len(working),
-    "failed":    l2_fail,
-    "corrected": l2_corrected,
-    "dropped":   l2_dropped,
-    "note":      "Distance from city center exceeds allowed radius"
-})
-
-working = df[df["coord_validation_status"].isin(["PASS", "CORRECTED"])].copy()
-
-# ── LAYER 3: State boundary polygon check ────────────────────────────────────
-print("Running Layer 3 — state boundary polygon check...")
-
-# Map our state names to GeoJSON NAME_1 values
-STATE_MAP = {
-    "Andhra Pradesh":  "Andhra Pradesh",
-    "Assam":           "Assam",
-    "Bihar":           "Bihar",
-    "Delhi":           "Nct Of Delhi",
-    "Gujarat":         "Gujarat",
-    "Karnataka":       "Karnataka",
-    "Kerala":          "Kerala",
-    "Madhya Pradesh":  "Madhya Pradesh",
-    "Maharashtra":     "Maharashtra",
-    "Odisha":          "Odisha",
-    "Punjab":          "Punjab",
-    "Rajasthan":       "Rajasthan",
-    "Tamil Nadu":      "Tamil Nadu",
-    "Telangana":       "Telangana",
-    "Uttar Pradesh":   "Uttar Pradesh",
-    "West Bengal":     "West Bengal",
+print("Loading city_reference.csv ...")
+city_ref = pd.read_csv(RAW_DIR / "city_reference.csv")
+city_lookup = {
+    row["city"]: {
+        "state":      row["state"],
+        "center_lat": row["center_lat"],
+        "center_lon": row["center_lon"],
+        "radius_km":  row["allowed_radius_km"],
+        "tier":       row["tier"],
+    }
+    for _, row in city_ref.iterrows()
 }
 
-l3_fail = l3_corrected = l3_dropped = 0
+print("Loading india_states.geojson ...")
+geojson_path = RAW_DIR / "india_states.geojson"
+if not geojson_path.exists():
+    print(f"\nERROR: india_states.geojson not found at {geojson_path}")
+    print("Download it from:")
+    print("  https://github.com/datameet/maps/raw/master/States/Admin2.geojson")
+    print("Save it to: data/raw/india_states.geojson")
+    raise SystemExit(1)
 
-for idx, row in working.iterrows():
-    point     = Point(row["longitude"], row["latitude"])
-    our_state = row["state"]
-    shp_state = STATE_MAP.get(our_state, our_state)
+india_states = gpd.read_file(geojson_path)
 
-    if not india_union.contains(point):
-        df.loc[idx, "coord_validation_status"] = "DROPPED"
-        df.loc[idx, "validation_note"]         = "Layer3: OFFSHORE"
-        l3_fail    += 1
-        l3_dropped += 1
+# FIX: Column in this GeoJSON is NAME_1, not ST_NM
+# Print actual columns so you know what you're working with
+print(f"  GeoJSON columns: {list(india_states.columns)}")
+
+# Detect which column holds state names
+state_col = None
+for candidate in ["NAME_1", "ST_NM", "state", "State", "NAME", "name"]:
+    if candidate in india_states.columns:
+        state_col = candidate
+        break
+
+if state_col is None:
+    print(f"ERROR: Cannot find state name column in GeoJSON.")
+    print(f"Available columns: {list(india_states.columns)}")
+    raise SystemExit(1)
+
+print(f"  Using column '{state_col}' for state names")
+india_states = india_states.rename(columns={state_col: "state_name"})
+
+# Build a dict: state_name → polygon for fast lookup
+state_polygons = {
+    row["state_name"]: row["geometry"]
+    for _, row in india_states.iterrows()
+    if row["geometry"] is not None
+}
+print(f"  {len(state_polygons)} state polygons loaded")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INITIALISE TRACKING COLUMNS
+# ─────────────────────────────────────────────────────────────────────────────
+df["coord_validation_status"] = "OK"
+df["drop_reason"] = ""
+
+log = {
+    "input_total":          len(df),
+    "layer1_dropped":       0,
+    "layer2_failed":        0,
+    "layer2_corrected":     0,
+    "layer2_dropped":       0,
+    "layer3_state_mismatch": 0,
+    "layer3_offshore":      0,
+    "layer3_corrected":     0,
+    "layer4_missing_dropped": 0,
+    "layer4_duplicates_dropped": 0,
+    "final_clean":          0,
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LAYER 1 — National Bounding Box Check
+# ─────────────────────────────────────────────────────────────────────────────
+print("\n── Layer 1: India bounding box ──────────────────────────────────")
+
+def outside_india(row):
+    try:
+        lat, lon = float(row["latitude"]), float(row["longitude"])
+        return not (INDIA_LAT_MIN <= lat <= INDIA_LAT_MAX and
+                    INDIA_LON_MIN <= lon <= INDIA_LON_MAX)
+    except (ValueError, TypeError):
+        return True
+
+mask_l1 = df.apply(outside_india, axis=1)
+df.loc[mask_l1, "coord_validation_status"] = "DROPPED"
+df.loc[mask_l1, "drop_reason"] = "LAYER1_BBOX_FAIL"
+log["layer1_dropped"] = int(mask_l1.sum())
+print(f"  Dropped: {log['layer1_dropped']} rows outside India bounding box")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LAYER 2 — City Radius Check
+# Skip rows already dropped. Skip rural workshop rows (city='Rural').
+# ─────────────────────────────────────────────────────────────────────────────
+print("\n── Layer 2: City radius check ───────────────────────────────────")
+
+def haversine_km(lat1, lon1, lat2, lon2):
+    R = 6371.0
+    dlat = np.radians(lat2 - lat1)
+    dlon = np.radians(lon2 - lon1)
+    a = (np.sin(dlat/2)**2 +
+         np.cos(np.radians(lat1)) * np.cos(np.radians(lat2)) * np.sin(dlon/2)**2)
+    return R * 2 * np.arcsin(np.sqrt(a))
+
+
+active = df[df["coord_validation_status"] == "OK"].copy()
+rural_mask = active["city"] == "Rural"
+city_active = active[~rural_mask]
+
+for idx, row in city_active.iterrows():
+    city = row["city"]
+    if city not in city_lookup:
+        df.at[idx, "coord_validation_status"] = "UNKNOWN_CITY"
         continue
 
-    if shp_state in state_geoms:
-        if not state_geoms[shp_state].contains(point):
-            actual_state = "Unknown"
-            for sname, sgeom in state_geoms.items():
-                if sgeom.contains(point):
-                    actual_state = sname
-                    break
+    ref   = city_lookup[city]
+    dist  = haversine_km(
+        float(row["latitude"]),  float(row["longitude"]),
+        ref["center_lat"],       ref["center_lon"]
+    )
 
-            l3_fail += 1
-            if actual_state != "Unknown":
-                df.loc[idx, "state"]                   = actual_state
-                df.loc[idx, "coord_validation_status"] = "CORRECTED"
-                df.loc[idx, "validation_note"]         = (
-                    f"Layer3: STATE_MISMATCH — "
-                    f"was {our_state}, corrected to {actual_state}"
-                )
-                l3_corrected += 1
-            else:
-                df.loc[idx, "coord_validation_status"] = "DROPPED"
-                df.loc[idx, "validation_note"]         = "Layer3: not in any state polygon"
-                l3_dropped += 1
+    if dist > ref["radius_km"]:
+        log["layer2_failed"] += 1
 
-print(f"  Layer 3 failures : {l3_fail}")
-print(f"  State corrected  : {l3_corrected}")
-print(f"  Dropped          : {l3_dropped}")
-log_rows.append({
-    "layer":     "Layer 3 — state boundary",
-    "checked":   len(working),
-    "failed":    l3_fail,
-    "corrected": l3_corrected,
-    "dropped":   l3_dropped,
-    "note":      "Point-in-polygon against India state boundaries"
-})
+        # Attempt auto-correction — regenerate with smaller jitter (max 3 tries)
+        corrected = False
+        for attempt in range(3):
+            small_jitter_km = ref["radius_km"] * 0.4
+            jitter_lat = np.random.uniform(-small_jitter_km, small_jitter_km) / 111.0
+            jitter_lon = np.random.uniform(-small_jitter_km, small_jitter_km) / (
+                111.0 * np.cos(np.radians(ref["center_lat"]))
+            )
+            new_lat = round(ref["center_lat"] + jitter_lat, 6)
+            new_lon = round(ref["center_lon"] + jitter_lon, 6)
+            new_dist = haversine_km(new_lat, new_lon, ref["center_lat"], ref["center_lon"])
+            if new_dist <= ref["radius_km"]:
+                df.at[idx, "latitude"]  = new_lat
+                df.at[idx, "longitude"] = new_lon
+                df.at[idx, "coord_validation_status"] = "CORRECTED"
+                log["layer2_corrected"] += 1
+                corrected = True
+                break
 
-working = df[df["coord_validation_status"].isin(["PASS", "CORRECTED"])].copy()
+        if not corrected:
+            df.at[idx, "coord_validation_status"] = "DROPPED"
+            df.at[idx, "drop_reason"] = "LAYER2_CITY_RADIUS_FAIL"
+            log["layer2_dropped"] += 1
 
-# ── LAYER 4: Missing values, formatting, duplicates ──────────────────────────
-print("Running Layer 4 — missing values, formatting, duplicates...")
+print(f"  Failed radius check:  {log['layer2_failed']}")
+print(f"  Auto-corrected:       {log['layer2_corrected']}")
+print(f"  Dropped after 3 tries:{log['layer2_dropped']}")
 
-l4_dropped = 0
 
-critical_missing = working[
-    working["latitude"].isna() |
-    working["longitude"].isna() |
-    working["type"].isna()
-].index.tolist()
-df.loc[critical_missing, "coord_validation_status"] = "DROPPED"
-df.loc[critical_missing, "validation_note"]         = "Layer4: missing lat/lon/type"
-l4_dropped += len(critical_missing)
+# ─────────────────────────────────────────────────────────────────────────────
+# LAYER 3 — State Boundary Polygon Check
+# Checks point is on land and in correct state.
+# Rural workshops: only check they're inside India (any state polygon).
+# ─────────────────────────────────────────────────────────────────────────────
+print("\n── Layer 3: State boundary polygon check ────────────────────────")
 
+# Build a unified India polygon for rural workshop checks
+india_union = india_states.geometry.union_all()
+
+active_l3 = df[df["coord_validation_status"].isin(["OK", "CORRECTED"])].copy()
+
+for idx, row in active_l3.iterrows():
+    try:
+        point = Point(float(row["longitude"]), float(row["latitude"]))
+    except (ValueError, TypeError):
+        df.at[idx, "coord_validation_status"] = "DROPPED"
+        df.at[idx, "drop_reason"] = "LAYER3_INVALID_COORDS"
+        continue
+
+    city = str(row.get("city", ""))
+
+    if city == "Rural":
+        # Rural workshops: only check they're inside India at all
+        if not india_union.contains(point):
+            df.at[idx, "coord_validation_status"] = "DROPPED"
+            df.at[idx, "drop_reason"] = "LAYER3_OFFSHORE"
+            log["layer3_offshore"] += 1
+        # If inside India → keep as-is (no city/state constraint for rural)
+        continue
+
+    # City-based records: check correct state polygon
+    expected_state = row.get("state", "")
+    matched_state  = None
+
+    for state_name, polygon in state_polygons.items():
+        if polygon.contains(point):
+            matched_state = state_name
+            break
+
+    if matched_state is None:
+        # Point not inside any state polygon → offshore or outside India
+        df.at[idx, "coord_validation_status"] = "DROPPED"
+        df.at[idx, "drop_reason"] = "LAYER3_OFFSHORE"
+        log["layer3_offshore"] += 1
+
+    elif matched_state.lower() != str(expected_state).lower():
+        # Inside India but wrong state — correct the state field, keep the point
+        df.at[idx, "state"] = matched_state
+        df.at[idx, "coord_validation_status"] = "CORRECTED"
+        log["layer3_state_mismatch"] += 1
+        log["layer3_corrected"] += 1
+
+print(f"  State mismatches corrected: {log['layer3_state_mismatch']}")
+print(f"  Offshore/outside India:     {log['layer3_offshore']}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LAYER 4 — Missing Values and Duplicates
+# ─────────────────────────────────────────────────────────────────────────────
+print("\n── Layer 4: Missing values and duplicates ───────────────────────")
+
+# Work only on surviving rows
+clean = df[~df["coord_validation_status"].isin(["DROPPED"])].copy()
+
+# Drop rows missing the three essential fields
+essential_missing = (
+    clean["latitude"].isna() |
+    clean["longitude"].isna() |
+    clean["type"].isna()
+)
+log["layer4_missing_dropped"] = int(essential_missing.sum())
+clean = clean[~essential_missing]
+
+# Fill non-essential missing fields
 for col in ["contact_person", "phone", "address"]:
-    df[col] = df[col].fillna("Unknown")
+    if col in clean.columns:
+        clean[col] = clean[col].fillna("Unknown")
 
-df["city"]  = df["city"].str.strip().str.title()
-df["state"] = df["state"].str.strip().str.title()
-df["type"]  = df["type"].str.strip()
+# Text standardisation
+clean["city"]  = clean["city"].str.strip().str.title()
+clean["state"] = clean["state"].str.strip().str.title()
+clean["type"]  = clean["type"].str.strip()   # preserve exact case for DB
 
-dupes = df[df.duplicated(subset=["id"], keep="first")].index.tolist()
-df.loc[dupes, "coord_validation_status"] = "DROPPED"
-df.loc[dupes, "validation_note"]         = "Layer4: duplicate ID"
-l4_dropped += len(dupes)
+# Duplicate ID check — keep first occurrence
+before_dedup = len(clean)
+clean = clean.drop_duplicates(subset=["id"], keep="first")
+log["layer4_duplicates_dropped"] = before_dedup - len(clean)
 
-working2    = df[df["coord_validation_status"].isin(["PASS", "CORRECTED"])].copy()
-coord_dupes = working2[
-    working2.duplicated(subset=["latitude", "longitude"], keep="first")
-].index.tolist()
-df.loc[coord_dupes, "coord_validation_status"] = "DROPPED"
-df.loc[coord_dupes, "validation_note"]         = "Layer4: near-duplicate coordinates"
-l4_dropped += len(coord_dupes)
+print(f"  Missing essential fields dropped: {log['layer4_missing_dropped']}")
+print(f"  Duplicate IDs dropped:            {log['layer4_duplicates_dropped']}")
 
-print(f"  Layer 4 dropped  : {l4_dropped}")
-log_rows.append({
-    "layer":     "Layer 4 — missing values / duplicates",
-    "checked":   len(working),
-    "failed":    l4_dropped,
-    "corrected": 0,
-    "dropped":   l4_dropped,
-    "note":      "Missing critical fields, duplicate IDs, near-duplicate coords"
-})
 
-# ── Final clean dataset ───────────────────────────────────────────────────────
-final = df[df["coord_validation_status"].isin(["PASS", "CORRECTED"])].copy()
+# ─────────────────────────────────────────────────────────────────────────────
+# WRITE OUTPUTS
+# ─────────────────────────────────────────────────────────────────────────────
+log["final_clean"] = len(clean)
 
-final.to_csv(ROOT / "data/processed/locations_clean.csv", index=False)
-print(f"\nClean dataset → data/processed/locations_clean.csv")
+clean_out = PROCESSED_DIR / "locations_clean.csv"
+clean.to_csv(clean_out, index=False)
+print(f"\n✓ Wrote {len(clean):,} clean records → {clean_out}")
 
-# ── Validation log ────────────────────────────────────────────────────────────
-total_dropped   = len(df[df["coord_validation_status"] == "DROPPED"])
-total_corrected = len(df[df["coord_validation_status"] == "CORRECTED"])
-total_final     = len(final)
+# Validation log
+log_df = pd.DataFrame([{
+    "step":    k,
+    "count":   v,
+} for k, v in log.items()])
+log_out = PROCESSED_DIR / "validation_log.csv"
+log_df.to_csv(log_out, index=False)
+print(f"✓ Validation log → {log_out}")
 
-summary = pd.DataFrame(log_rows)
-summary.to_csv(ROOT / "data/processed/validation_log.csv", index=False)
-
-print(f"\n{'='*50}")
-print(f"VALIDATION SUMMARY")
-print(f"{'='*50}")
-print(f"Total input          : {total_input:,}")
-print(f"Total dropped        : {total_dropped:,}")
-print(f"Total corrected      : {total_corrected:,}")
-print(f"Final clean records  : {total_final:,}")
-print(f"\nValidation log → data/processed/validation_log.csv")
-print(f"\nLayer-by-layer:")
-print(summary.to_string(index=False))
-print(f"\nStatus breakdown:")
-print(df["coord_validation_status"].value_counts().to_string())
+# ─────────────────────────────────────────────────────────────────────────────
+# SUMMARY
+# ─────────────────────────────────────────────────────────────────────────────
+print("\n── Validation Summary ───────────────────────────────────────────")
+print(f"  Input records         : {log['input_total']:>7,}")
+print(f"  Layer 1 dropped       : {log['layer1_dropped']:>7,}")
+print(f"  Layer 2 failed        : {log['layer2_failed']:>7,}  ({log['layer2_corrected']} corrected, {log['layer2_dropped']} dropped)")
+print(f"  Layer 3 offshore      : {log['layer3_offshore']:>7,}")
+print(f"  Layer 3 state fix     : {log['layer3_state_mismatch']:>7,}")
+print(f"  Layer 4 dropped       : {log['layer4_missing_dropped'] + log['layer4_duplicates_dropped']:>7,}")
+print(f"  ─────────────────────────────")
+print(f"  Final clean records   : {log['final_clean']:>7,}")
