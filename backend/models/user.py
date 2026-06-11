@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from typing import Optional
 
 
@@ -13,7 +13,7 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     role: str
-    user_id: str
+    user_id: int
     distributor_id: Optional[str] = None
     username: str
 
@@ -23,7 +23,7 @@ class CurrentUser(BaseModel):
     Decoded JWT payload — attached to every protected request by the
     get_current_user dependency. Not a database model; lives in memory only.
     """
-    user_id: str
+    user_id: int
     username: str
     email: str
     role: str                          # "org_admin" or "distributor_user"
