@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 import asyncpg
+from asyncpg import UniqueViolationError
 
 from backend.models.workflow import RORequestCreate, RORequestResponse, RORequestDecision
 from backend.models.user import CurrentUser
@@ -233,34 +234,41 @@ async def decide_ro_request(
     if decision.action == "APPROVED":
         # Auto-create the new Retail Office in the locations table
         new_location_id = f"RO-{request_id:04d}"
-        await db.execute(
-            """
-            INSERT INTO locations
-                (id, name, type, city, address, state, active, geom)
-            VALUES (
-                $1, $2, 'Retail Office',
-                (SELECT city FROM distributor_territories
-                 WHERE distributor_id = $3 AND locked = TRUE LIMIT 1),
-                $4,
-                (SELECT state FROM locations
-                 WHERE type = 'Dealer'
-                 ORDER BY ST_Distance(
-                     geom,
-                     ST_SetSRID(ST_MakePoint($6, $5), 4326)
-                 )
-                 LIMIT 1),
-                TRUE,
-                ST_SetSRID(ST_MakePoint($6, $5), 4326)
+        try:
+            await db.execute(
+                """
+                INSERT INTO locations
+                    (id, name, type, city, address, state, active, geom)
+                VALUES (
+                    $1, $2, 'Retail Office',
+                    (SELECT city FROM locations
+                     WHERE type = 'Dealer'
+                     ORDER BY ST_Distance(geom, ST_SetSRID(ST_MakePoint($5, $4), 4326))
+                     LIMIT 1),
+                    $3,
+                    (SELECT state FROM locations
+                     WHERE type = 'Dealer'
+                     ORDER BY ST_Distance(geom, ST_SetSRID(ST_MakePoint($5, $4), 4326))
+                     LIMIT 1),
+                    TRUE,
+                    ST_SetSRID(ST_MakePoint($5, $4), 4326)
+                )
+                """,
+                new_location_id,          # $1
+                req["proposed_name"],     # $2
+                req["proposed_address"],  # $3
+                req["latitude"],          # $4
+                req["longitude"],         # $5
             )
-            ON CONFLICT (id) DO NOTHING
-            """,
-            new_location_id,
-            req["proposed_name"],
-            req["distributor_id"],
-            req["proposed_address"],
-            req["latitude"],
-            req["longitude"],
-        )
+        except UniqueViolationError:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Location ID '{new_location_id}' already exists in the database. "
+                    f"A location with this ID may have been seeded manually. "
+                    f"Contact a system administrator to resolve the conflict."
+                ),
+            )
 
     # Update the request status
     updated = await db.fetchrow(
