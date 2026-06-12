@@ -52,6 +52,7 @@ export default function MainMap({
   showHeatmap,
   showWhitespace,
   showTerritories = true,
+  territoriesVersion = 0,
   mode = 'view',           // 'view' | 'draw' | 'ro-request'
   onPolygonDraw,           // (geojson polygon) => void
   onPinDrop,               // (lat, lng) => void
@@ -63,6 +64,7 @@ export default function MainMap({
   const popupRef     = useRef(null)
   const drawPointsRef = useRef([])
   const markersRef    = useRef([])
+  const [drawPointCount, setDrawPointCount] = useState(0)
   const pinMarkerRef  = useRef(null)
   const fetchTimerRef = useRef(null)
 
@@ -360,7 +362,7 @@ export default function MainMap({
       } catch {}
     }
     load()
-  }, [mapReady, showTerritories])
+  }, [mapReady, showTerritories, territoriesVersion])
 
   // ── Heatmap visibility ───────────────────────────────────────────────
   useEffect(() => {
@@ -409,6 +411,7 @@ export default function MainMap({
       const onClick = (e) => {
         const pt = [e.lngLat.lng, e.lngLat.lat]
         drawPointsRef.current = [...drawPointsRef.current, pt]
+        setDrawPointCount(drawPointsRef.current.length)
         updateDrawPreview()
 
         const el = document.createElement('div')
@@ -455,6 +458,7 @@ export default function MainMap({
 
   function clearDraw() {
     drawPointsRef.current = []
+    setDrawPointCount(0)
     markersRef.current.forEach((m) => m.remove())
     markersRef.current = []
     mapRef.current?.getSource('draw-preview')?.setData({ type:'FeatureCollection', features:[] })
@@ -490,11 +494,11 @@ export default function MainMap({
         }}>
           <button
             onClick={completePolygon}
-            disabled={drawPointsRef.current.length < 3}
+            disabled={drawPointCount < 3}
             style={{
               padding:'8px 20px', borderRadius:6, border:'none', cursor:'pointer',
               background:'var(--cta)', color:'#fff', fontWeight:600, fontSize:13,
-              boxShadow:'var(--shadow-md)', opacity: drawPointsRef.current.length < 3 ? .5 : 1,
+              boxShadow:'var(--shadow-md)', opacity: drawPointCount < 3 ? .5 : 1,
               transition:'var(--transition)',
             }}>
             Complete Polygon

@@ -38,17 +38,18 @@ export default function Login() {
         display:'flex',
       }} className="fade-in">
         <div style={{ maxWidth:440 }}>
-          <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:40 }}>
+          <div style={{ marginBottom:40 }}>
             <div style={{
-              width:48, height:48, borderRadius:12,
-              background:'#F59E0B',
-              display:'flex', alignItems:'center', justifyContent:'center',
-              fontFamily:'var(--font-mono)', fontWeight:800, fontSize:18, color:'#fff',
-            }}>MS</div>
-            <div>
-              <div style={{ color:'#F8FAFC', fontSize:16, fontWeight:700 }}>Maruti Suzuki</div>
-              <div style={{ color:'#94A3B8', fontSize:12 }}>Distributor Network Platform</div>
+              display:'inline-block', background:'#fff',
+              padding:'6px 14px', borderRadius:6,
+            }}>
+              <img
+                src="/maruti-suzuki-logo.svg"
+                alt="Maruti Suzuki"
+                style={{ height:36, width:'auto', display:'block' }}
+              />
             </div>
+            <div style={{ color:'#e2e5ea', fontSize:12, marginTop:8 }}>Distributor Network Analysis</div>
           </div>
 
           <h1 style={{

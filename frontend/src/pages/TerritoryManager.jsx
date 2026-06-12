@@ -3,13 +3,26 @@ import AppLayout from '../components/AppLayout'
 import MainMap from '../components/Map/MainMap'
 import client from '../api/client'
 
-function TerritoryListItem({ t, onLock }) {
+function TerritoryListItem({ t, onLock, onDelete }) {
   const [locking, setLocking] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+
   async function handleLock() {
     setLocking(true)
     try { await onLock(t.id) }
     finally { setLocking(false) }
   }
+
+  async function handleDelete() {
+    const msg = t.locked
+      ? `"${t.territory_name}" is LOCKED and actively used by distributor ${t.distributor_id}. Deleting it will remove their map boundary and block their access. Are you sure?`
+      : `Delete "${t.territory_name}"? This cannot be undone.`
+    if (!window.confirm(msg)) return
+    setDeleting(true)
+    try { await onDelete(t.id) }
+    finally { setDeleting(false) }
+  }
+
   return (
     <div style={{
       padding:'12px 14px',
@@ -28,21 +41,42 @@ function TerritoryListItem({ t, onLock }) {
             {t.locked ? 'Locked' : 'Unlocked'}
           </span>
         </div>
-        {!t.locked && (
+        <div style={{ display:'flex', gap:6, flexShrink:0 }}>
+          {!t.locked && (
+            <button
+              onClick={handleLock}
+              disabled={locking || deleting}
+              style={{
+                padding:'5px 12px', borderRadius:6, border:'none',
+                background:'var(--primary)', color:'#fff',
+                fontWeight:600, fontSize:11, cursor: locking ? 'not-allowed' : 'pointer',
+                transition:'var(--transition)', opacity: locking ? .6 : 1,
+              }}
+            >
+              {locking ? '…' : 'Lock'}
+            </button>
+          )}
           <button
-            onClick={handleLock}
-            disabled={locking}
+            onClick={handleDelete}
+            disabled={deleting || locking}
+            title={t.locked ? 'Delete locked territory (removes distributor boundary)' : 'Delete territory'}
             style={{
-              padding:'5px 12px', borderRadius:6, border:'none',
-              background:'var(--primary)', color:'#fff',
-              fontWeight:600, fontSize:11, cursor: locking ? 'not-allowed' : 'pointer',
-              flexShrink:0, transition:'var(--transition)',
-              opacity: locking ? .6 : 1,
+              padding:'5px 8px', borderRadius:6,
+              border:`1.5px solid ${t.locked ? '#FCA5A5' : '#FECACA'}`,
+              background: t.locked ? '#FEE2E2' : '#FEF2F2',
+              color:'#DC2626',
+              cursor: deleting ? 'not-allowed' : 'pointer',
+              transition:'var(--transition)', opacity: deleting ? .6 : 1,
+              display:'flex', alignItems:'center',
             }}
           >
-            {locking ? '…' : 'Lock'}
+            {deleting ? '…' : (
+              <svg width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6m4-6v6"/><path d="M9 6V4h6v2"/>
+              </svg>
+            )}
           </button>
-        )}
+        </div>
       </div>
     </div>
   )
@@ -58,12 +92,14 @@ export default function TerritoryManager() {
   const [saving, setSaving]           = useState(false)
   const [error, setError]             = useState('')
   const [toast, setToast]             = useState(null)
+  const [territoriesVersion, setTerritoriesVersion] = useState(0)
 
   const loadTerritories = useCallback(async () => {
     setLoading(true)
     try {
       const { data } = await client.get('/api/territories')
       setTerritories(Array.isArray(data) ? data : [])
+      setTerritoriesVersion((v) => v + 1)
     } catch { setTerritories([]) }
     finally { setLoading(false) }
   }, [])
@@ -116,6 +152,18 @@ export default function TerritoryManager() {
       loadTerritories()
     } catch (err) {
       setToast({ msg: err.response?.data?.detail || 'Failed to lock territory.', type:'error' })
+      setTimeout(() => setToast(null), 3000)
+    }
+  }
+
+  async function handleDelete(id) {
+    try {
+      await client.delete(`/api/territories/${id}`)
+      setToast({ msg:'Territory deleted.', type:'success' })
+      setTimeout(() => setToast(null), 3000)
+      loadTerritories()
+    } catch (err) {
+      setToast({ msg: err.response?.data?.detail || 'Failed to delete territory.', type:'error' })
       setTimeout(() => setToast(null), 3000)
     }
   }
@@ -178,6 +226,7 @@ export default function TerritoryManager() {
               showHeatmap={false}
               showWhitespace={false}
               showTerritories
+              territoriesVersion={territoriesVersion}
               onPolygonDraw={handlePolygonDraw}
             />
           </div>
@@ -211,7 +260,7 @@ export default function TerritoryManager() {
                 </div>
               ) : (
                 territories.map((t) => (
-                  <TerritoryListItem key={t.id} t={t} onLock={handleLock} />
+                  <TerritoryListItem key={t.id} t={t} onLock={handleLock} onDelete={handleDelete} />
                 ))
               )}
             </div>

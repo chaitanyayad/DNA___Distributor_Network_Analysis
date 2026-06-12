@@ -18,7 +18,7 @@ class RORequestCreate(BaseModel):
 class RORequestResponse(BaseModel):
     """Single RO request record."""
     id: int
-    requested_by: int
+    requested_by: str
     distributor_id: str
     proposed_name: str
     proposed_address: Optional[str] = None

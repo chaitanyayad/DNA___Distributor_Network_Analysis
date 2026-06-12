@@ -83,6 +83,17 @@ async def create_territory(
     """
     geojson_str = json.dumps(payload.geojson_polygon)
 
+    # Validate that the distributor_id belongs to a real distributor_user
+    valid = await db.fetchval(
+        "SELECT 1 FROM users WHERE distributor_id = $1 AND role = 'distributor_user'",
+        payload.distributor_id,
+    )
+    if not valid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"No distributor user found with ID '{payload.distributor_id}'. Check the ID and try again.",
+        )
+
     # Overlap check against locked territories
     conflict_row = await db.fetchrow(
         """
@@ -175,3 +186,32 @@ async def lock_territory(
         message=f"Territory '{updated['territory_name']}' is now locked. "
                 f"No overlapping territories can be created.",
     )
+
+
+@router.delete("/{territory_id}", status_code=status.HTTP_200_OK)
+async def delete_territory(
+    territory_id: int,
+    current_user: CurrentUser = Depends(require_role("org_admin")),
+    db: asyncpg.Connection = Depends(get_db),
+):
+    """
+    Delete an unlocked territory. Locked territories cannot be deleted —
+    unlock is not supported; contact a DB admin if a locked territory must be removed.
+    """
+    row = await db.fetchrow(
+        "SELECT id, territory_name, locked FROM distributor_territories WHERE id = $1",
+        territory_id,
+    )
+
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Territory ID {territory_id} not found.",
+        )
+
+    await db.execute(
+        "DELETE FROM distributor_territories WHERE id = $1",
+        territory_id,
+    )
+
+    return {"message": f"Territory '{row['territory_name']}' deleted successfully."}

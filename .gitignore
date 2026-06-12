@@ -1,5 +1,11 @@
+# Claude AI session files
+.claude/
+
+# Markdown files (README.md is the only exception)
+*.md
+!README.md
+
 # Python virtual environment
-updated.md
 dna/
 venv/
 env/
@@ -13,11 +19,9 @@ dist/
 build/
 .eggs/
 snippet.py
-chat_summary.md
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb_checkpoints
-backend_summary.md
 
 # Environment secrets
 .env
