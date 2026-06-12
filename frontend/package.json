@@ -13,6 +13,7 @@
     "@mapbox/mapbox-gl-draw": "^1.5.1",
     "axios": "^1.17.0",
     "mapbox-gl": "^3.24.0",
+    "maplibre-gl": "^5.24.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-router-dom": "^7.17.0",
